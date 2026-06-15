@@ -130,8 +130,8 @@ const tryLoadManifestWithYarnPnp = (dir: string, packageName: string) => {
     }
   } catch (error) {
     // biome-ignore lint/suspicious/noConsole: ignore
-    console.error(error);
     // Explicitly suppressing errors here
+    return null;
   }
 
   return null;
