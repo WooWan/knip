@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
+import picomatch from 'picomatch';
 import { glob } from 'tinyglobby';
 import type { PackageJson, WorkspacePackage } from '../types/package-json.ts';
-import { partition } from './array.ts';
 import { debugLog } from './debug.ts';
 import { ConfigurationError } from './errors.ts';
 import { logWarning } from './log.ts';
@@ -10,23 +10,37 @@ import { join } from './path.ts';
 
 type Packages = Map<string, WorkspacePackage>;
 type WorkspacePkgNames = Set<string>;
+type WorkspaceMatcher = {
+  isNegated: boolean;
+  matcher: ReturnType<typeof picomatch>;
+};
 
 export default async function mapWorkspaces(cwd: string, workspaces: string[]): Promise<[Packages, WorkspacePkgNames]> {
-  const [negatedPatterns, patterns] = partition(workspaces, p => p.match(/^!/));
   const packages: Packages = new Map();
   const wsPkgNames: WorkspacePkgNames = new Set();
+  const patterns: string[] = [];
+  const workspaceMatchers: WorkspaceMatcher[] = [];
 
-  if (patterns.length === 0 && negatedPatterns.length === 0) return [packages, wsPkgNames];
+  for (const pattern of workspaces) {
+    const isNegated = pattern.startsWith('!');
+    const normalizedPattern = isNegated ? pattern.slice(1) : pattern;
+    if (!isNegated) patterns.push(pattern);
+    workspaceMatchers.push({ isNegated, matcher: picomatch(normalizedPattern) });
+  }
+
+  if (patterns.length === 0) return [packages, wsPkgNames];
 
   const manifestPatterns = patterns.map(p => join(p, 'package.json'));
 
   const matches = await glob(manifestPatterns, {
     cwd,
-    ignore: ['**/node_modules/**', ...negatedPatterns.map(p => p.slice(1))],
+    ignore: ['**/node_modules/**'],
   });
 
   for (const match of matches.sort()) {
     const name = match === 'package.json' ? '.' : match.replace(/\/package\.json$/, '');
+    if (!isWorkspaceIncluded(name, workspaceMatchers)) continue;
+
     const dir = join(cwd, name);
     const manifestPath = join(cwd, match);
     try {
@@ -47,4 +61,12 @@ export default async function mapWorkspaces(cwd: string, workspaces: string[]): 
   }
 
   return [packages, wsPkgNames];
+}
+
+function isWorkspaceIncluded(name: string, matchers: WorkspaceMatcher[]): boolean {
+  for (let i = matchers.length - 1; i >= 0; i--) {
+    const { isNegated, matcher } = matchers[i];
+    if (matcher(name)) return !isNegated;
+  }
+  return false;
 }
